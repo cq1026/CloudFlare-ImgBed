@@ -26,7 +26,27 @@ export async function onRequest(context) {
         return new Response('URL is required', { status: 400 })
     }
 
-    const response = await fetch(url);
+    // 添加必要的请求头，模拟浏览器请求
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': url,
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site'
+        }
+    });
+
+    console.log('[fetchRes] Response status:', response.status);
+
+    // 检查响应状态码
+    if (!response.ok) {
+        console.log('[fetchRes] 请求失败，状态码:', response.status);
+        return new Response(`Failed to fetch URL: HTTP ${response.status}`, { status: 400 })
+    }
+
     const contentType = response.headers.get('content-type');
     console.log('[fetchRes] Content-Type:', contentType);
 
