@@ -24,13 +24,12 @@ export async function onRequest(context) {
         return new Response('URL is required', { status: 400 })
     }
 
-    // 需要 User-Agent 的域名白名单（这些网站对 User-Agent 有严格要求）
+    // 需要 User-Agent 的域名白名单
     const needUserAgentDomains = [
         'files.catbox.moe',
         'catbox.moe',
         'i.imgur.com',
         'imgur.com'
-        // 可以根据需要添加更多域名
     ];
 
     // 检查 URL 的域名是否在白名单中
@@ -45,32 +44,13 @@ export async function onRequest(context) {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': url,
-            'Sec-Fetch-Dest': 'image',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'cross-site'
+            'Referer': url
         }
     } : {};
 
     const response = await fetch(url, fetchOptions);
-
-    // 检查响应状态码
-    if (!response.ok) {
-        return new Response(`Failed to fetch URL: HTTP ${response.status}`, { status: 400 })
-    }
-
     const contentType = response.headers.get('content-type');
-
-    // 检查 content-type（如果存在）
-    const hasValidContentType = contentType && (contentType.startsWith('image') || contentType.startsWith('video'));
-
-    // 后备方案：检查 URL 文件扩展名（用于 content-type 缺失或不正确的情况）
-    const urlPath = urlObj.pathname.toLowerCase();
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.avif', '.heic', '.heif'];
-    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v', '.3gp'];
-    const hasValidExtension = [...imageExtensions, ...videoExtensions].some(ext => urlPath.endsWith(ext));
-
-    if (hasValidContentType || hasValidExtension) {
+    if (contentType.startsWith('image') || contentType.startsWith('video')) {
         //增加跨域头后返回
         const headers = new Headers(response.headers);
         headers.set('Access-Control-Allow-Origin', '*');
