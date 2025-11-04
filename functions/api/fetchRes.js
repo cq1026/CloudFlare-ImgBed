@@ -68,9 +68,13 @@ export async function onRequest(context) {
         const headers = new Headers(response.headers);
         headers.set('Access-Control-Allow-Origin', '*');
 
-        // 如果原始 Content-Type 无效，根据文件扩展名设置正确的 Content-Type
+        // === 测试：显示原始 Content-Type ===
+        console.log('[fetchRes] 原始 Content-Type 将被保留:', headers.get('Content-Type'));
+        console.log('[fetchRes] 前端将收到此类型的 blob');
+
+        // 暂时注释掉 Content-Type 修正代码，测试是否真的需要
+        /*
         if (!hasValidContentType && hasValidExtension) {
-            // 根据文件扩展名映射到 MIME 类型
             const ext = urlPath.substring(urlPath.lastIndexOf('.'));
             const mimeTypes = {
                 '.jpg': 'image/jpeg',
@@ -100,6 +104,7 @@ export async function onRequest(context) {
             headers.set('Content-Type', correctMimeType);
             console.log('[fetchRes] 修正 Content-Type 为:', correctMimeType);
         }
+        */
 
         return new Response(response.body, {
             headers: headers
