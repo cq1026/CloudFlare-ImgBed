@@ -47,6 +47,40 @@ export async function onRequest(context) {
         //增加跨域头后返回
         const headers = new Headers(response.headers);
         headers.set('Access-Control-Allow-Origin', '*');
+
+        // 如果原始 Content-Type 无效，根据文件扩展名设置正确的 Content-Type
+        if (!hasValidContentType && hasValidExtension) {
+            // 根据文件扩展名映射到 MIME 类型
+            const ext = urlPath.substring(urlPath.lastIndexOf('.'));
+            const mimeTypes = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp',
+                '.svg': 'image/svg+xml',
+                '.ico': 'image/x-icon',
+                '.tiff': 'image/tiff',
+                '.avif': 'image/avif',
+                '.heic': 'image/heic',
+                '.heif': 'image/heif',
+                '.mp4': 'video/mp4',
+                '.webm': 'video/webm',
+                '.ogg': 'video/ogg',
+                '.mov': 'video/quicktime',
+                '.avi': 'video/x-msvideo',
+                '.mkv': 'video/x-matroska',
+                '.flv': 'video/x-flv',
+                '.wmv': 'video/x-ms-wmv',
+                '.m4v': 'video/x-m4v',
+                '.3gp': 'video/3gpp'
+            };
+            const correctMimeType = mimeTypes[ext] || 'application/octet-stream';
+            headers.set('Content-Type', correctMimeType);
+            console.log('[fetchRes] 修正 Content-Type 为:', correctMimeType);
+        }
+
         return new Response(response.body, {
             headers: headers
         })
