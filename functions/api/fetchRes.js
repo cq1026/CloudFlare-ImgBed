@@ -25,7 +25,17 @@ export async function onRequest(context) {
     }
     const response = await fetch(url);
     const contentType = response.headers.get('content-type');
-    if (contentType.startsWith('image') || contentType.startsWith('video')) {
+
+    // Check content-type if it exists
+    const hasValidContentType = contentType && (contentType.startsWith('image') || contentType.startsWith('video'));
+
+    // Fallback: check URL file extension for cases where content-type is missing or incorrect
+    const urlPath = new URL(url).pathname.toLowerCase();
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.avif', '.heic', '.heif'];
+    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v', '.3gp'];
+    const hasValidExtension = [...imageExtensions, ...videoExtensions].some(ext => urlPath.endsWith(ext));
+
+    if (hasValidContentType || hasValidExtension) {
         //增加跨域头后返回
         const headers = new Headers(response.headers);
         headers.set('Access-Control-Allow-Origin', '*');
