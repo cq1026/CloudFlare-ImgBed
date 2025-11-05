@@ -795,7 +795,7 @@ async function getAllPendingOperations(context, lastOperationId = null) {
     const operations = [];
 
     let cursor = null;
-    const MAX_OPERATION_COUNT = 30; // 单次获取的最大操作数量
+    const MAX_OPERATION_COUNT = 100; // 单次获取的最大操作数量（优化：从30提升到100）
     let isALL = true; // 是否获取了所有操作
     let operationCount = 0;
 

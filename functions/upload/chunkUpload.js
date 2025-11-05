@@ -595,8 +595,8 @@ export async function retryFailedChunks(context, failedChunks, uploadChannel, op
     const {
         maxRetries = 5,
         retryTimeout = 60000, // 60秒重试超时
-        maxConcurrency = 3, // 最大并发数
-        batchSize = 6 // 每批处理的分块数
+        maxConcurrency = 15, // 最大并发数（优化：从3提升到15）
+        batchSize = 20 // 每批处理的分块数（优化：从6提升到20）
     } = options;
 
     if (!failedChunks || failedChunks.length === 0) {
@@ -859,80 +859,102 @@ export async function cleanupFailedMultipartUploads(context, uploadId, uploadCha
 export async function checkChunkUploadStatuses(env, uploadId, totalChunks) {
     const chunkStatuses = [];
     const currentTime = Date.now();
-
     const db = getDatabase(env);
-    
-    for (let i = 0; i < totalChunks; i++) {
-        const chunkKey = `chunk_${uploadId}_${i.toString().padStart(3, '0')}`;
-        try {
-            const chunkRecord = await db.getWithMetadata(chunkKey, { type: 'arrayBuffer' });
-            if (chunkRecord && chunkRecord.metadata) {
-                let status = chunkRecord.metadata.status || 'unknown';
-                
-                // 检查上传超时：如果状态是 uploading 但超过了超时阈值，标记为超时
-                if (status === 'uploading' && chunkRecord.metadata.timeoutThreshold && currentTime > chunkRecord.metadata.timeoutThreshold) {
-                    status = 'timeout';
-                    
-                    // 更新状态为超时
-                    const timeoutMetadata = {
-                        ...chunkRecord.metadata,
-                        status: 'timeout',
-                        error: 'Upload timeout detected',
-                        timeoutDetectedTime: currentTime
-                    };
-                    
-                    await db.put(chunkKey, chunkRecord.value, { 
-                        metadata: timeoutMetadata,
-                        expirationTtl: 3600
-                    }).catch(err => console.warn(`Failed to update timeout status for chunk ${i}:`, err));
-                }
-                
-                let hasData = false;
-                if (status === 'completed') {
-                    // 已完成的分块，不存储原始数据
-                    hasData = false;
-                } else if (status === 'uploading' || status === 'failed' || status === 'timeout') {
-                    // 正在上传、失败或超时的分块通过原始数据判断
-                    hasData = (chunkRecord.value && chunkRecord.value.byteLength > 0);
-                } else {
-                    // 其他状态也检查是否有数据
-                    hasData = (chunkRecord.value && chunkRecord.value.byteLength > 0);
-                }
-                
-                chunkStatuses.push({
-                    index: i,
-                    key: chunkKey,
-                    status: status,
-                    uploadResult: chunkRecord.metadata.uploadResult,
-                    error: chunkRecord.metadata.error,
-                    hasData: hasData,
-                    chunkSize: chunkRecord.metadata.chunkSize,
-                    uploadTime: chunkRecord.metadata.uploadTime,
-                    uploadStartTime: chunkRecord.metadata.uploadStartTime,
-                    timeoutThreshold: chunkRecord.metadata.timeoutThreshold,
-                    uploadChannel: chunkRecord.metadata.uploadChannel,
-                    isTimeout: status === 'timeout'
-                });
-            } else {
-                chunkStatuses.push({
-                    index: i,
-                    key: chunkKey,
-                    status: 'missing',
-                    hasData: false
-                });
-            }
-        } catch (error) {
-            chunkStatuses.push({
-                index: i,
-                key: chunkKey,
-                status: 'error',
-                error: error.message,
-                hasData: false
-            });
+
+    // 优化策略：10个以内串行，超过10个并行
+    if (totalChunks <= 10) {
+        // 串行处理（适合小批量）
+        for (let i = 0; i < totalChunks; i++) {
+            const chunkKey = `chunk_${uploadId}_${i.toString().padStart(3, '0')}`;
+            const status = await processChunkStatus(db, chunkKey, i, currentTime);
+            chunkStatuses.push(status);
         }
+    } else {
+        // 并行处理（适合大批量）
+        console.log(`检测到 ${totalChunks} 个分块，启用并行状态检查`);
+        const checkPromises = [];
+
+        for (let i = 0; i < totalChunks; i++) {
+            const chunkKey = `chunk_${uploadId}_${i.toString().padStart(3, '0')}`;
+            checkPromises.push(processChunkStatus(db, chunkKey, i, currentTime));
+        }
+
+        // 并行执行所有状态检查
+        const results = await Promise.all(checkPromises);
+        chunkStatuses.push(...results);
     }
-    
+
     return chunkStatuses;
+}
+
+// 处理单个分块状态的辅助函数
+async function processChunkStatus(db, chunkKey, index, currentTime) {
+    try {
+        const chunkRecord = await db.getWithMetadata(chunkKey, { type: 'arrayBuffer' });
+        if (chunkRecord && chunkRecord.metadata) {
+            let status = chunkRecord.metadata.status || 'unknown';
+
+            // 检查上传超时：如果状态是 uploading 但超过了超时阈值，标记为超时
+            if (status === 'uploading' && chunkRecord.metadata.timeoutThreshold && currentTime > chunkRecord.metadata.timeoutThreshold) {
+                status = 'timeout';
+
+                // 更新状态为超时
+                const timeoutMetadata = {
+                    ...chunkRecord.metadata,
+                    status: 'timeout',
+                    error: 'Upload timeout detected',
+                    timeoutDetectedTime: currentTime
+                };
+
+                await db.put(chunkKey, chunkRecord.value, {
+                    metadata: timeoutMetadata,
+                    expirationTtl: 3600
+                }).catch(err => console.warn(`Failed to update timeout status for chunk ${index}:`, err));
+            }
+
+            let hasData = false;
+            if (status === 'completed') {
+                // 已完成的分块，不存储原始数据
+                hasData = false;
+            } else if (status === 'uploading' || status === 'failed' || status === 'timeout') {
+                // 正在上传、失败或超时的分块通过原始数据判断
+                hasData = (chunkRecord.value && chunkRecord.value.byteLength > 0);
+            } else {
+                // 其他状态也检查是否有数据
+                hasData = (chunkRecord.value && chunkRecord.value.byteLength > 0);
+            }
+
+            return {
+                index: index,
+                key: chunkKey,
+                status: status,
+                uploadResult: chunkRecord.metadata.uploadResult,
+                error: chunkRecord.metadata.error,
+                hasData: hasData,
+                chunkSize: chunkRecord.metadata.chunkSize,
+                uploadTime: chunkRecord.metadata.uploadTime,
+                uploadStartTime: chunkRecord.metadata.uploadStartTime,
+                timeoutThreshold: chunkRecord.metadata.timeoutThreshold,
+                uploadChannel: chunkRecord.metadata.uploadChannel,
+                isTimeout: status === 'timeout'
+            };
+        } else {
+            return {
+                index: index,
+                key: chunkKey,
+                status: 'missing',
+                hasData: false
+            };
+        }
+    } catch (error) {
+        return {
+            index: index,
+            key: chunkKey,
+            status: 'error',
+            error: error.message,
+            hasData: false
+        };
+    }
 }
 
 
