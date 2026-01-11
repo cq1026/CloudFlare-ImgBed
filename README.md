@@ -1,10 +1,10 @@
 <div align="center">
     <a href="https://github.com/MarSeventh/CloudFlare-ImgBed"><img width="80%" alt="logo" src="static/readme/banner.png"/></a>
-    <p><em>🗂️开源文件托管解决方案，支持 Docker 和无服务器部署，支持 Telegram Bot 、 Cloudflare R2 、S3 等多种存储渠道，支持 WebDAV 协议和多种 RESTful API</em></p>
+    <p><em>🗂️开源文件托管解决方案，支持 Docker 和无服务器部署，支持 Telegram、Discord、Cloudflare R2、S3、Huggingface 等多种存储渠道，支持 WebDAV 协议和多种 RESTful API</em></p>
     <p>
         <a href="https://github.com/MarSeventh/CloudFlare-ImgBed/blob/main/README.md">简体中文</a> | <a href="https://github.com/MarSeventh/CloudFlare-ImgBed/blob/main/README_en.md">English</a> | <a href="https://cfbed.sanyue.de">官方网站</a>
     </p>
-    <div>
+    <p align="center">
         <a href="https://github.com/MarSeventh/CloudFlare-ImgBed/blob/main/LICENSE">
         <img src="https://img.shields.io/github/license/MarSeventh/CloudFlare-ImgBed" alt="License" />
         </a>
@@ -26,8 +26,15 @@
         <a href="https://github.com/MarSeventh/CloudFlare-ImgBed/network/members">
           <img src="https://img.shields.io/github/forks/MarSeventh/CloudFlare-ImgBed" alt="Forks" />
         </a>
-    </div>
+    </P>
+    <p align="center">
+      <a href="https://trendshift.io/repositories/14324" target="_blank">
+        <img src="https://trendshift.io/api/badge/repositories/14324" alt="GitHub Trending" height="80">
+      </a>
+    </p>
 </div>
+
+
 
 
 
@@ -96,20 +103,24 @@
 
 **演示站点**：[CloudFlare ImgBed](https://cfbed.1314883.xyz/) 访问密码：`cfbed`
 
-![image-20250313204101984](static/readme/202503132041511.png)
+![image-20250313204101984](static/readme/login.png)
 
-![image-20250313204138886](static/readme/202503132041072.png)
+![image-20250313204101984](static/readme/upload.png)
 
 <details>
     <summary>其他页面效果展示</summary>
 
-![image-20250313204308225](static/readme/202503132043466.png)
+![image-20250313204138886](static/readme/uploading.png)
 
-![image-20250314152355339](static/readme/202503141524797.png)
+![image-20250313204308225](static/readme/dashboard.png)
+
+![image-20250314152355339](static/readme/customer-config.png)
 
 ![status-page](static/readme/status-page.png)
 
-![image-20250313204325002](static/readme/202503132043265.png)
+![public-gallery](static/readme/public-gallery.png)
+
+
 
 </details>
 

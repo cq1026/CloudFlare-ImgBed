@@ -77,6 +77,16 @@ export async function getOthersConfig(db, env) {
         enabled: kvWebDAV.enabled ?? false,
         username: kvWebDAV.username || '',
         password: kvWebDAV.password || '',
+        uploadChannel: kvWebDAV.uploadChannel || '',
+        channelName: kvWebDAV.channelName || '',
+        fixed: false,
+    }
+
+    // 公开浏览
+    const kvPublicBrowse = settingsKV.publicBrowse || {}
+    settings.publicBrowse = {
+        enabled: kvPublicBrowse.enabled ?? false,
+        allowedDir: kvPublicBrowse.allowedDir || '',
         fixed: false,
     }
 

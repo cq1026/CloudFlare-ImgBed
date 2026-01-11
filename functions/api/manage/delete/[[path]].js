@@ -2,6 +2,16 @@ import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { purgeCFCache } from "../../../utils/purgeCache";
 import { removeFileFromIndex, batchRemoveFilesFromIndex } from "../../../utils/indexManager.js";
 import { getDatabase } from '../../../utils/databaseAdapter.js';
+import { DiscordAPI } from '../../../utils/discordAPI.js';
+import { HuggingFaceAPI } from '../../../utils/huggingfaceAPI.js';
+
+// CORS 跨域响应头
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+};
 
 export async function onRequest(context) {
     const { request, env, params, waitUntil } = context;
@@ -23,7 +33,7 @@ export async function onRequest(context) {
 
             while (folderQueue.length > 0) {
                 const currentFolder = folderQueue.shift();
-                
+
                 // 获取指定目录下的所有文件
                 const listUrl = new URL(`${url.origin}/api/manage/list?count=-1&dir=${currentFolder.path}`);
                 const listRequest = new Request(listUrl, request);
@@ -59,18 +69,22 @@ export async function onRequest(context) {
                 waitUntil(batchRemoveFilesFromIndex(context, deletedFiles));
             }
 
-            // 返回处理结果
             return new Response(JSON.stringify({
                 success: true,
                 deleted: deletedFiles,
                 failed: failedFiles
-            }));
+            }), {
+                headers: { 'Content-Type': 'application/json', ...corsHeaders }
+            });
 
         } catch (e) {
             return new Response(JSON.stringify({
                 success: false,
                 error: e.message
-            }), { status: 400 });
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json', ...corsHeaders }
+            });
         }
     }
 
@@ -92,12 +106,17 @@ export async function onRequest(context) {
         return new Response(JSON.stringify({
             success: true,
             fileId: fileId
-        }));
+        }), {
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
     } catch (e) {
         return new Response(JSON.stringify({
             success: false,
             error: e.message
-        }), { status: 400 });
+        }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
     }
 }
 
@@ -107,6 +126,12 @@ async function deleteFile(env, fileId, cdnUrl, url) {
         // 读取图片信息
         const db = getDatabase(env);
         const img = await db.getWithMetadata(fileId);
+
+        // 如果文件记录不存在，直接返回成功（幂等删除）
+        if (!img) {
+            console.warn(`File ${fileId} not found in database, skipping delete`);
+            return true;
+        }
 
         // 如果是R2渠道的图片，需要删除R2中对应的图片
         if (img.metadata?.Channel === 'CloudflareR2') {
@@ -119,7 +144,18 @@ async function deleteFile(env, fileId, cdnUrl, url) {
             await deleteS3File(img);
         }
 
+        // Discord 渠道的图片，需要删除 Discord 中对应的消息
+        if (img.metadata?.Channel === 'Discord') {
+            await deleteDiscordFile(img);
+        }
+
+        // HuggingFace 渠道的图片，需要删除 HuggingFace 中对应的文件
+        if (img.metadata?.Channel === 'HuggingFace') {
+            await deleteHuggingFaceFile(img);
+        }
+
         // 删除数据库中的记录
+        // 注意：容量统计现在由索引自动维护，删除文件后索引更新时会自动重新计算
         await db.delete(fileId);
 
         // 清除CDN缓存
@@ -131,7 +167,7 @@ async function deleteFile(env, fileId, cdnUrl, url) {
             const nullResponse = new Response(null, {
                 headers: { 'Cache-Control': 'max-age=0' },
             });
-            
+
             const normalizedFolder = fileId.split('/').slice(0, -1).join('/');
             await cache.put(`${url.origin}/api/randomFileList?dir=${normalizedFolder}`, nullResponse);
         } catch (error) {
@@ -168,6 +204,56 @@ async function deleteS3File(img) {
         return true;
     } catch (error) {
         console.error("S3 Delete Failed:", error);
+        return false;
+    }
+}
+
+// 删除 Discord 渠道的图片（删除 Discord 消息）
+async function deleteDiscordFile(img) {
+    const botToken = img.metadata?.DiscordBotToken;
+    const channelId = img.metadata?.DiscordChannelId;
+    const messageId = img.metadata?.DiscordMessageId;
+
+    if (!botToken || !channelId || !messageId) {
+        console.warn('Discord file missing required metadata for deletion');
+        return false;
+    }
+
+    try {
+        const discordAPI = new DiscordAPI(botToken);
+        const success = await discordAPI.deleteMessage(channelId, messageId);
+        if (!success) {
+            console.error('Discord Delete Failed: API returned false');
+        }
+        return success;
+    } catch (error) {
+        console.error("Discord Delete Failed:", error);
+        return false;
+    }
+}
+
+
+// 删除 HuggingFace 渠道的图片
+async function deleteHuggingFaceFile(img) {
+    const token = img.metadata?.HfToken;
+    const repo = img.metadata?.HfRepo;
+    const filePath = img.metadata?.HfFilePath;
+    const isPrivate = img.metadata?.HfIsPrivate || false;
+
+    if (!token || !repo || !filePath) {
+        console.warn('HuggingFace file missing required metadata for deletion');
+        return false;
+    }
+
+    try {
+        const huggingfaceAPI = new HuggingFaceAPI(token, repo, isPrivate);
+        const success = await huggingfaceAPI.deleteFile(filePath, `Delete ${filePath}`);
+        if (!success) {
+            console.error('HuggingFace Delete Failed: API returned false');
+        }
+        return success;
+    } catch (error) {
+        console.error("HuggingFace Delete Failed:", error);
         return false;
     }
 }

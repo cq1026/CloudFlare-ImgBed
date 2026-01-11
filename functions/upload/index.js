@@ -7,6 +7,8 @@ import {
 import { initializeChunkedUpload, handleChunkUpload, uploadLargeFileToTelegram, handleCleanupRequest } from "./chunkUpload";
 import { handleChunkMerge } from "./chunkMerge";
 import { TelegramAPI } from "../utils/telegramAPI";
+import { DiscordAPI } from "../utils/discordAPI";
+import { HuggingFaceAPI } from "../utils/huggingfaceAPI";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getDatabase } from '../utils/databaseAdapter.js';
 
@@ -20,7 +22,7 @@ export async function onRequest(context) {  // Contents of context object
 
     // 读取各项配置，存入 context
     const securityConfig = await fetchSecurityConfig(env);
-    const uploadConfig = await fetchUploadConfig(env);
+    const uploadConfig = await fetchUploadConfig(env, context);
 
     context.securityConfig = securityConfig;
     context.uploadConfig = uploadConfig;
@@ -80,8 +82,10 @@ async function processFileUpload(context, formdata = null) {
     // 将 formdata 存储在 context 中
     context.formdata = formdata;
 
-    // 获得上传渠道
+    // 获得上传渠道类型
     const urlParamUploadChannel = url.searchParams.get('uploadChannel');
+    // 获得指定的渠道名称（可选）
+    const urlParamChannelName = url.searchParams.get('channelName');
 
     // 获取IP地址
     const uploadIp = getUploadIp(request);
@@ -101,6 +105,12 @@ async function processFileUpload(context, formdata = null) {
         case 's3':
             uploadChannel = 'S3';
             break;
+        case 'discord':
+            uploadChannel = 'Discord';
+            break;
+        case 'huggingface':
+            uploadChannel = 'HuggingFace';
+            break;
         case 'external':
             uploadChannel = 'External';
             break;
@@ -108,6 +118,9 @@ async function processFileUpload(context, formdata = null) {
             uploadChannel = 'TelegramNew';
             break;
     }
+
+    // 将指定的渠道名称存入 context，供后续上传函数使用
+    context.specifiedChannelName = urlParamChannelName || null;
 
     // 获取文件信息
     const time = new Date().getTime();
@@ -188,6 +201,22 @@ async function processFileUpload(context, formdata = null) {
         } else {
             err = await res.text();
         }
+    } else if (uploadChannel === 'Discord') {
+        // ---------------------Discord 渠道------------------
+        const res = await uploadFileToDiscord(context, fullId, metadata, returnLink);
+        if (res.status === 200 || !autoRetry) {
+            return res;
+        } else {
+            err = await res.text();
+        }
+    } else if (uploadChannel === 'HuggingFace') {
+        // ---------------------HuggingFace 渠道------------------
+        const res = await uploadFileToHuggingFace(context, fullId, metadata, returnLink);
+        if (res.status === 200 || !autoRetry) {
+            return res;
+        } else {
+            err = await res.text();
+        }
     } else if (uploadChannel === 'External') {
         // --------------------外链渠道----------------------
         const res = await uploadFileToExternal(context, fullId, metadata, returnLink);
@@ -209,7 +238,7 @@ async function processFileUpload(context, formdata = null) {
 
 // 上传到Cloudflare R2
 async function uploadFileToCloudflareR2(context, fullId, metadata, returnLink) {
-    const { env, waitUntil, uploadConfig, formdata } = context;
+    const { env, waitUntil, uploadConfig, formdata, specifiedChannelName } = context;
     const db = getDatabase(env);
 
     // 检查R2数据库是否配置
@@ -223,16 +252,27 @@ async function uploadFileToCloudflareR2(context, fullId, metadata, returnLink) {
         return createResponse('Error: No R2 channel provided', { status: 400 });
     }
 
-    const r2Channel = r2Settings.channels[0];
+    // 选择渠道：优先使用指定的渠道名称
+    let r2Channel;
+    if (specifiedChannelName) {
+        r2Channel = r2Settings.channels.find(ch => ch.name === specifiedChannelName);
+    }
+    if (!r2Channel) {
+        r2Channel = r2Settings.channels[0];
+    }
 
     const R2DataBase = env.img_r2;
 
-    // 写入R2数据库
-    await R2DataBase.put(fullId, formdata.get('file'));
+    // 写入R2数据库，获取实际存储大小
+    const r2Object = await R2DataBase.put(fullId, formdata.get('file'));
 
     // 更新metadata
     metadata.Channel = "CloudflareR2";
-    metadata.ChannelName = "R2_env";
+    metadata.ChannelName = r2Channel.name || "R2_env";
+    // 使用 R2 返回的实际文件大小
+    if (r2Object && r2Object.size) {
+        metadata.FileSize = (r2Object.size / 1024 / 1024).toFixed(2);
+    }
 
     // 图像审查，采用R2的publicUrl
     const R2PublicUrl = r2Channel.publicUrl;
@@ -266,16 +306,24 @@ async function uploadFileToCloudflareR2(context, fullId, metadata, returnLink) {
 
 // 上传到 S3（支持自定义端点）
 async function uploadFileToS3(context, fullId, metadata, returnLink) {
-    const { env, waitUntil, uploadConfig, securityConfig, url, formdata } = context;
+    const { env, waitUntil, uploadConfig, securityConfig, url, formdata, specifiedChannelName } = context;
     const db = getDatabase(env);
 
     const uploadModerate = securityConfig.upload.moderate;
 
     const s3Settings = uploadConfig.s3;
     const s3Channels = s3Settings.channels;
-    const s3Channel = s3Settings.loadBalance.enabled
-        ? s3Channels[Math.floor(Math.random() * s3Channels.length)]
-        : s3Channels[0];
+    
+    // 选择渠道：优先使用指定的渠道名称
+    let s3Channel;
+    if (specifiedChannelName) {
+        s3Channel = s3Channels.find(ch => ch.name === specifiedChannelName);
+    }
+    if (!s3Channel) {
+        s3Channel = s3Settings.loadBalance.enabled
+            ? s3Channels[Math.floor(Math.random() * s3Channels.length)]
+            : s3Channels[0];
+    }
 
     if (!s3Channel) {
         return createResponse('Error: No S3 channel provided', { status: 400 });
@@ -371,30 +419,40 @@ async function uploadFileToS3(context, fullId, metadata, returnLink) {
 
 // 上传到Telegram
 async function uploadFileToTelegram(context, fullId, metadata, fileExt, fileName, fileType, returnLink) {
-    const { env, waitUntil, uploadConfig, url, formdata } = context;
+    const { env, waitUntil, uploadConfig, url, formdata, specifiedChannelName } = context;
     const db = getDatabase(env);
 
-    // 选择一个 Telegram 渠道上传，若负载均衡开启，则随机选择一个；否则选择第一个
+    // 选择一个 Telegram 渠道上传
     const tgSettings = uploadConfig.telegram;
     const tgChannels = tgSettings.channels;
-    const tgChannel = tgSettings.loadBalance.enabled ? tgChannels[Math.floor(Math.random() * tgChannels.length)] : tgChannels[0];
+    
+    let tgChannel;
+    // 如果指定了渠道名称，优先使用指定的渠道
+    if (specifiedChannelName) {
+        tgChannel = tgChannels.find(ch => ch.name === specifiedChannelName);
+    }
+    // 未指定或未找到指定渠道，使用负载均衡或第一个
+    if (!tgChannel) {
+        tgChannel = tgSettings.loadBalance.enabled ? tgChannels[Math.floor(Math.random() * tgChannels.length)] : tgChannels[0];
+    }
     if (!tgChannel) {
         return createResponse('Error: No Telegram channel provided', { status: 400 });
     }
 
     const tgBotToken = tgChannel.botToken;
     const tgChatId = tgChannel.chatId;
+    const tgProxyUrl = tgChannel.proxyUrl || '';
     const file = formdata.get('file');
     const fileSize = file.size;
 
-    const telegramAPI = new TelegramAPI(tgBotToken);
+    const telegramAPI = new TelegramAPI(tgBotToken, tgProxyUrl);
 
-    // 20MB 分片阈值
-    const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB
+    // 16MB 分片阈值 (TG Bot getFile download limit: 20MB, leave 4MB safety margin)
+    const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB
 
     if (fileSize > CHUNK_SIZE) {
         // 大文件分片上传
-        return await uploadLargeFileToTelegram(env, file, fullId, metadata, fileName, fileType, url, returnLink, tgBotToken, tgChatId, tgChannel);
+        return await uploadLargeFileToTelegram(context, file, fullId, metadata, fileName, fileType, returnLink, tgBotToken, tgChatId, tgChannel);
     }
 
     // 由于TG会把gif后缀的文件转为视频，所以需要修改后缀名绕过限制
@@ -406,7 +464,7 @@ async function uploadFileToTelegram(context, fullId, metadata, fileExt, fileName
         const newFileName = fileName.replace(/\.webp$/, '.jpeg');
         const newFile = new File([formdata.get('file')], newFileName, { type: fileType });
         formdata.set('file', newFile);
-    } 
+    }
 
     // 选择对应的发送接口
     const fileTypeMap = {
@@ -456,8 +514,9 @@ async function uploadFileToTelegram(context, fullId, metadata, fileExt, fileName
         );
 
 
-        // 图像审查
-        const moderateUrl = `https://api.telegram.org/file/bot${tgBotToken}/${filePath}`;
+        // 图像审查（使用代理域名或官方域名）
+        const moderateDomain = tgProxyUrl ? `https://${tgProxyUrl}` : 'https://api.telegram.org';
+        const moderateUrl = `${moderateDomain}/file/bot${tgBotToken}/${filePath}`;
         metadata.Label = await moderateContent(env, moderateUrl);
 
         // 更新metadata，写入KV数据库
@@ -468,6 +527,10 @@ async function uploadFileToTelegram(context, fullId, metadata, fileExt, fileName
             metadata.TgFileId = id;
             metadata.TgChatId = tgChatId;
             metadata.TgBotToken = tgBotToken;
+            // 保存代理域名配置
+            if (tgProxyUrl) {
+                metadata.TgProxyUrl = tgProxyUrl;
+            }
             await db.put(fullId, "", {
                 metadata: metadata,
             });
@@ -525,15 +588,245 @@ async function uploadFileToExternal(context, fullId, metadata, returnLink) {
     );
 }
 
+
+// 上传到 Discord
+async function uploadFileToDiscord(context, fullId, metadata, returnLink) {
+    const { env, waitUntil, uploadConfig, formdata, specifiedChannelName } = context;
+    const db = getDatabase(env);
+
+    // 获取 Discord 渠道配置
+    const discordSettings = uploadConfig.discord;
+    if (!discordSettings || !discordSettings.channels || discordSettings.channels.length === 0) {
+        return createResponse('Error: No Discord channel configured', { status: 400 });
+    }
+
+    // 选择渠道：优先使用指定的渠道名称
+    const discordChannels = discordSettings.channels;
+    let discordChannel;
+    if (specifiedChannelName) {
+        discordChannel = discordChannels.find(ch => ch.name === specifiedChannelName);
+    }
+    if (!discordChannel) {
+        discordChannel = discordSettings.loadBalance?.enabled
+            ? discordChannels[Math.floor(Math.random() * discordChannels.length)]
+            : discordChannels[0];
+    }
+
+    if (!discordChannel || !discordChannel.botToken || !discordChannel.channelId) {
+        return createResponse('Error: Discord channel not properly configured', { status: 400 });
+    }
+
+    const file = formdata.get('file');
+    const fileSize = file.size;
+    const fileName = metadata.FileName;
+
+    // Discord 文件大小限制：Nitro 会员 25MB，免费用户 10MB
+    const isNitro = discordChannel.isNitro || false;
+    const DISCORD_MAX_SIZE = isNitro ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
+    if (fileSize > DISCORD_MAX_SIZE) {
+        const limitMB = isNitro ? 25 : 10;
+        return createResponse(`Error: File size exceeds Discord limit (${limitMB}MB), please use another channel`, { status: 413 });
+    }
+
+    const discordAPI = new DiscordAPI(discordChannel.botToken);
+
+    try {
+        // 上传文件到 Discord
+        const response = await discordAPI.sendFile(file, discordChannel.channelId, fileName);
+        const fileInfo = discordAPI.getFileInfo(response);
+
+        if (!fileInfo) {
+            throw new Error('Failed to get file info from Discord response');
+        }
+
+        // 更新 metadata
+        metadata.Channel = "Discord";
+        metadata.ChannelName = discordChannel.name || "Discord_env";
+        metadata.FileSize = (fileInfo.file_size / 1024 / 1024).toFixed(2);
+        metadata.DiscordMessageId = fileInfo.message_id;
+        metadata.DiscordChannelId = discordChannel.channelId;
+        metadata.DiscordBotToken = discordChannel.botToken;
+        // 注意：不存储 DiscordAttachmentUrl，因为 Discord 附件 URL 会在约24小时后过期
+        // 读取时会通过 API 获取新的 URL
+
+        // 如果配置了代理 URL，保存代理信息
+        if (discordChannel.proxyUrl) {
+            metadata.DiscordProxyUrl = discordChannel.proxyUrl;
+        }
+
+        // 图像审查（使用 Discord CDN URL 或代理 URL）
+        let moderateUrl = fileInfo.url;
+        if (discordChannel.proxyUrl) {
+            moderateUrl = fileInfo.url.replace('https://cdn.discordapp.com', `https://${discordChannel.proxyUrl}`);
+        }
+        metadata.Label = await moderateContent(env, moderateUrl);
+
+        // 写入 KV 数据库
+        try {
+            await db.put(fullId, "", { metadata });
+        } catch (error) {
+            return createResponse('Error: Failed to write to KV database', { status: 500 });
+        }
+
+        // 结束上传
+        waitUntil(endUpload(context, fullId, metadata));
+
+        // 返回成功响应
+        return createResponse(
+            JSON.stringify([{ 'src': returnLink }]),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            }
+        );
+
+    } catch (error) {
+        console.error('Discord upload error:', error.message);
+        return createResponse(`Error: Discord upload failed - ${error.message}`, { status: 500 });
+    }
+}
+
+
+// 上传到 HuggingFace
+async function uploadFileToHuggingFace(context, fullId, metadata, returnLink) {
+    const { env, waitUntil, uploadConfig, formdata, specifiedChannelName } = context;
+    const db = getDatabase(env);
+
+    console.log('=== HuggingFace Upload Start ===');
+
+    // 获取 HuggingFace 渠道配置
+    const hfSettings = uploadConfig.huggingface;
+    console.log('HuggingFace settings:', hfSettings ? 'found' : 'not found');
+
+    if (!hfSettings || !hfSettings.channels || hfSettings.channels.length === 0) {
+        console.log('Error: No HuggingFace channel configured');
+        return createResponse('Error: No HuggingFace channel configured', { status: 400 });
+    }
+
+    // 选择渠道：优先使用指定的渠道名称
+    const hfChannels = hfSettings.channels;
+    console.log('HuggingFace channels count:', hfChannels.length);
+
+    let hfChannel;
+    if (specifiedChannelName) {
+        hfChannel = hfChannels.find(ch => ch.name === specifiedChannelName);
+    }
+    if (!hfChannel) {
+        hfChannel = hfSettings.loadBalance?.enabled
+            ? hfChannels[Math.floor(Math.random() * hfChannels.length)]
+            : hfChannels[0];
+    }
+
+    console.log('Selected channel:', hfChannel?.name, 'repo:', hfChannel?.repo);
+
+    if (!hfChannel || !hfChannel.token || !hfChannel.repo) {
+        console.log('Error: HuggingFace channel not properly configured', {
+            hasChannel: !!hfChannel,
+            hasToken: !!hfChannel?.token,
+            hasRepo: !!hfChannel?.repo
+        });
+        return createResponse('Error: HuggingFace channel not properly configured', { status: 400 });
+    }
+
+    const file = formdata.get('file');
+    const fileName = metadata.FileName;
+    // 获取前端预计算的 SHA256（如果有）
+    const precomputedSha256 = formdata.get('sha256') || null;
+    console.log('File to upload:', fileName, 'size:', file?.size, 'precomputed SHA256:', precomputedSha256 ? 'yes' : 'no');
+
+    // 构建文件路径：直接使用 fullId（与其他渠道保持一致）
+    const hfFilePath = fullId;
+    console.log('HuggingFace file path:', hfFilePath);
+
+    const huggingfaceAPI = new HuggingFaceAPI(hfChannel.token, hfChannel.repo, hfChannel.isPrivate || false);
+
+    try {
+        // 上传文件到 HuggingFace（传入预计算的 SHA256）
+        console.log('Starting HuggingFace upload...');
+        const result = await huggingfaceAPI.uploadFile(file, hfFilePath, `Upload ${fileName}`, precomputedSha256);
+        console.log('HuggingFace upload result:', result);
+
+        if (!result.success) {
+            throw new Error('Failed to upload file to HuggingFace');
+        }
+
+        // 更新 metadata
+        metadata.Channel = "HuggingFace";
+        metadata.ChannelName = hfChannel.name || "HuggingFace_env";
+        metadata.FileSize = (file.size / 1024 / 1024).toFixed(2);
+        metadata.HfRepo = hfChannel.repo;
+        metadata.HfFilePath = hfFilePath;
+        metadata.HfToken = hfChannel.token;
+        metadata.HfIsPrivate = hfChannel.isPrivate || false;
+        metadata.HfFileUrl = result.fileUrl;
+
+        // 图像审查（公开仓库直接访问，私有仓库需要代理）
+        let moderateUrl = result.fileUrl;
+        if (!hfChannel.isPrivate) {
+            metadata.Label = await moderateContent(env, moderateUrl);
+        } else {
+            // 私有仓库暂不支持图像审查，标记为 None
+            metadata.Label = "None";
+        }
+
+        // 写入 KV 数据库
+        try {
+            await db.put(fullId, "", { metadata });
+        } catch (error) {
+            return createResponse('Error: Failed to write to KV database', { status: 500 });
+        }
+
+        // 结束上传
+        waitUntil(endUpload(context, fullId, metadata));
+
+        // 返回成功响应
+        return createResponse(
+            JSON.stringify([{ 'src': returnLink }]),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            }
+        );
+
+    } catch (error) {
+        console.error('HuggingFace upload error:', error.message);
+        return createResponse(`Error: HuggingFace upload failed - ${error.message}`, { status: 500 });
+    }
+}
+
+
 // 自动切换渠道重试
 async function tryRetry(err, context, uploadChannel, fullId, metadata, fileExt, fileName, fileType, returnLink) {
     const { env, url, formdata } = context;
 
-    // 渠道列表
-    const channelList = ['CloudflareR2', 'TelegramNew', 'S3'];
+    // 渠道列表（Discord 因为有 10MB 限制，放在最后尝试）
+    const channelList = ['CloudflareR2', 'TelegramNew', 'S3', 'HuggingFace', 'Discord'];
     const errMessages = {};
     errMessages[uploadChannel] = 'Error: ' + uploadChannel + err;
 
+    // 先用原渠道再试一次（关闭服务端压缩）
+    url.searchParams.set('serverCompress', 'false');
+    let retryRes = null;
+    if (uploadChannel === 'CloudflareR2') {
+        retryRes = await uploadFileToCloudflareR2(context, fullId, metadata, returnLink);
+    } else if (uploadChannel === 'TelegramNew') {
+        retryRes = await uploadFileToTelegram(context, fullId, metadata, fileExt, fileName, fileType, returnLink);
+    } else if (uploadChannel === 'S3') {
+        retryRes = await uploadFileToS3(context, fullId, metadata, returnLink);
+    } else if (uploadChannel === 'HuggingFace') {
+        retryRes = await uploadFileToHuggingFace(context, fullId, metadata, returnLink);
+    } else if (uploadChannel === 'Discord') {
+        retryRes = await uploadFileToDiscord(context, fullId, metadata, returnLink);
+    }
+
+    // 原渠道重试成功，直接返回
+    if (retryRes && retryRes.status === 200) {
+        return retryRes;
+    } else if (retryRes) {
+        errMessages[uploadChannel + '_retry'] = 'Error: ' + uploadChannel + ' retry - ' + await retryRes.text();
+    }
+
+    // 原渠道重试失败，切换到其他渠道
     for (let i = 0; i < channelList.length; i++) {
         if (channelList[i] !== uploadChannel) {
             let res = null;
@@ -543,11 +836,15 @@ async function tryRetry(err, context, uploadChannel, fullId, metadata, fileExt, 
                 res = await uploadFileToTelegram(context, fullId, metadata, fileExt, fileName, fileType, returnLink);
             } else if (channelList[i] === 'S3') {
                 res = await uploadFileToS3(context, fullId, metadata, returnLink);
+            } else if (channelList[i] === 'HuggingFace') {
+                res = await uploadFileToHuggingFace(context, fullId, metadata, returnLink);
+            } else if (channelList[i] === 'Discord') {
+                res = await uploadFileToDiscord(context, fullId, metadata, returnLink);
             }
 
-            if (res.status === 200) {
+            if (res && res.status === 200) {
                 return res;
-            } else {
+            } else if (res) {
                 errMessages[channelList[i]] = 'Error: ' + channelList[i] + await res.text();
             }
         }

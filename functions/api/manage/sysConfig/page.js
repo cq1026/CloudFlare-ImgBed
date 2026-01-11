@@ -3,12 +3,12 @@ import { getDatabase } from '../../../utils/databaseAdapter.js';
 export async function onRequest(context) {
     // 页面设置相关，GET方法读取设置，POST方法保存设置
     const {
-      request, // same as existing Worker API
-      env, // same as existing Worker API
-      params, // if filename includes [id] or [[path]]
-      waitUntil, // same as ctx.waitUntil in existing Worker API
-      next, // used for middleware or to fetch assets
-      data, // arbitrary space for passing data between middlewares
+        request, // same as existing Worker API
+        env, // same as existing Worker API
+        params, // if filename includes [id] or [[path]]
+        waitUntil, // same as ctx.waitUntil in existing Worker API
+        next, // used for middleware or to fetch assets
+        data, // arbitrary space for passing data between middlewares
     } = context;
 
     const db = getDatabase(env);
@@ -73,6 +73,13 @@ export async function getPageConfig(db, env) {
             category: '全局设置',
         },
         {
+            id: 'logoLink',
+            label: 'Logo跳转链接',
+            placeholder: 'https://github.com/MarSeventh/CloudFlare-ImgBed',
+            tooltip: '点击Logo时跳转的链接，留空则使用默认GitHub链接',
+            category: '全局设置',
+        },
+        {
             id: 'bkInterval',
             label: '背景切换间隔',
             placeholder: '3000',
@@ -101,14 +108,23 @@ export async function getPageConfig(db, env) {
         },
         {
             id: 'defaultUploadChannel',
-            label: '默认上传渠道',
+            label: '默认渠道类型',
             type: 'select',
             options: [
                 { label: 'Telegram', value: 'telegram' },
                 { label: 'Cloudflare R2', value: 'cfr2' },
                 { label: 'S3', value: 's3' },
+                { label: 'Discord', value: 'discord' },
+                { label: 'HuggingFace', value: 'huggingface' },
             ],
             placeholder: 'telegram',
+            category: '客户端设置',
+        },
+        {
+            id: 'defaultChannelName',
+            label: '默认渠道名称',
+            type: 'channelName',
+            tooltip: '指定默认使用的渠道名称，需先选择上传渠道',
             category: '客户端设置',
         },
         {
@@ -128,6 +144,36 @@ export async function getPageConfig(db, env) {
                 { label: '短链接', value: 'short' },
             ],
             placeholder: 'default',
+            category: '客户端设置',
+        },
+        {
+            id: 'defaultConvertToWebp',
+            label: '默认转换WebP',
+            type: 'boolean',
+            default: false,
+            tooltip: '上传前将图片转换为WebP格式，可有效减小文件体积',
+            category: '客户端设置',
+        },
+        {
+            id: 'defaultCustomerCompress',
+            label: '默认开启压缩',
+            type: 'boolean',
+            default: true,
+            tooltip: '上传前在本地进行压缩，仅对图片文件生效',
+            category: '客户端设置',
+        },
+        {
+            id: 'defaultCompressBar',
+            label: '默认压缩阈值',
+            placeholder: '5',
+            tooltip: '图片大小超过此值将自动压缩，单位MB，范围1-20',
+            category: '客户端设置',
+        },
+        {
+            id: 'defaultCompressQuality',
+            label: '默认期望大小',
+            placeholder: '4',
+            tooltip: '压缩后图片大小期望值，单位MB，范围0.5-压缩阈值',
             category: '客户端设置',
         },
         {
