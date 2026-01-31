@@ -283,6 +283,7 @@ async function mergeR2ChunksInfo(context, uploadId, completedChunks, metadata) {
         }
         metadata.ChannelName = r2ChannelName;
         metadata.FileSize = (totalSize / 1024 / 1024).toFixed(2);
+        metadata.FileSizeBytes = totalSize;
 
         // 清理multipart info
         await db.delete(multipartKey);
@@ -379,6 +380,7 @@ async function mergeS3ChunksInfo(context, uploadId, completedChunks, metadata) {
         metadata.Channel = "S3";
         metadata.ChannelName = s3Channel.name;
         metadata.FileSize = (totalSize / 1024 / 1024).toFixed(2);
+        metadata.FileSizeBytes = totalSize;
 
         const s3ServerDomain = endpoint.replace(/https?:\/\//, "");
         if (pathStyle) {
@@ -474,6 +476,7 @@ async function mergeTelegramChunksInfo(context, uploadId, completedChunks, metad
         metadata.IsChunked = true;
         metadata.TotalChunks = completedChunks.length;
         metadata.FileSize = (totalSize / 1024 / 1024).toFixed(2);
+        metadata.FileSizeBytes = totalSize;
 
         // 将分片信息存储到value中
         const chunksData = JSON.stringify(chunks);
@@ -553,6 +556,7 @@ async function mergeDiscordChunksInfo(context, uploadId, completedChunks, metada
         metadata.IsChunked = true;
         metadata.TotalChunks = completedChunks.length;
         metadata.FileSize = (totalSize / 1024 / 1024).toFixed(2);
+        metadata.FileSizeBytes = totalSize;
 
         // 将分片信息存储到value中
         const chunksData = JSON.stringify(chunks);
